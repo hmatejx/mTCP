@@ -25,6 +25,15 @@ that mis-identifies IBM clones like the original Compaq Portable because their d
 what IBM did in the original IBM 5150 PC.  If you want to run the patch target then build the patch program first
 by going to UTILS and running wmake.
 
+## Forking and dependencies
+
+If you are including mTCP in your project to use the TCP/IP library, consider using git submodules. Yes, you are
+introducing a dependency but it will help keep you up to date, especially as the mTCP library changes and gets
+fixes or new features. The API has been stable for years. See https://github.com/radozd/ftp2p for an example of
+how to use mTCP as a submodule.
+
+Forking is also a reasonable alternative - at least you can see the upstream changes when they happen.
+
 ## Support
 
 I want you to have a great experience with mTCP and I provide support via email.  Please send your questions, bug reports
