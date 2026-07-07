@@ -22,7 +22,7 @@
 
 
    Description: Htget for DOS, inspired by a version that Ken Yap
-   (ken@syd.dit.csiro.au) wrote in 1997.  
+   (ken@syd.dit.csiro.au) wrote in 1997.
 
    Changes:
 
@@ -81,6 +81,7 @@ bool     QuietMode = false;
 bool     HeadersOnly = false;
 bool     ShowHeaders = false;
 bool     ModifiedSince = false;
+bool     ShowRate = false;
 
 enum HttpVersion { HTTP_v09, HTTP_v10, HTTP_v11 };
 HttpVersion HttpVer = HTTP_v11;
@@ -97,7 +98,6 @@ uint16_t HttpResponse = 500;
 
 bool     IsTZSet = false;
 time_t   LastModifiedTime = 0;
-
 
 
 // Server and file information
@@ -137,6 +137,8 @@ char *dayname[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
 char *monthname[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
 
+// Rate measurement
+time_t   TransferStartTime;
 
 // Return code table
 //
@@ -174,7 +176,7 @@ ReturnCodeRec_t rcMappingTable[] = {
   { 301, 301, 32 },  // Moved Permanently
   { 302, 302, 33 },  // Found
   { 303, 303, 34 },  // See Other
-  { 304, 304, 35 },  // Not Modified 
+  { 304, 304, 35 },  // Not Modified
   { 305, 305, 36 },  // Use Proxy
   { 307, 307, 37 },  // Temporary Redirect
 
@@ -219,7 +221,7 @@ uint8_t mapResponseCode( uint16_t httpRc ) {
 
 // Error and Verbose message handling
 //
-// Yes, these are very similar ... 
+// Yes, these are very similar ...
 
 inline void errorMessage( char *fmt, ... ) {
   if ( !QuietMode ) {
@@ -327,9 +329,9 @@ static int8_t base64Encoder(const char *in, char *out_p, uint16_t bufferLen) {
     // By this point t has up to three characters of input and in is pointing
     // to more input or the terminating null character.
 
-    *out++ = base64Chars[ t>>18 ];  
+    *out++ = base64Chars[ t>>18 ];
     *out++ = base64Chars[ (t>>12) & 0x3F ];
-    
+
     if ( padChars == 0 ) {
         *out++ = base64Chars[ (t>>6) & 0x3F ];
         *out++ = base64Chars[ t & 0x3F ];
@@ -342,9 +344,9 @@ static int8_t base64Encoder(const char *in, char *out_p, uint16_t bufferLen) {
         *out++ = '=';
         *out++ = '=';
     }
-   
+
   }
-         
+
   *out = 0;
 
   return 0;
@@ -528,7 +530,7 @@ uint16_t getLineFromInBuf( char *target ) {
 
 
   if ( inBufLen > LINEBUFSIZE  ) {
-    // There should have been enough data to read a header.  
+    // There should have been enough data to read a header.
     // Wipe out the inBuf and see what happens.
     inBufStartIndex = inBufLen = 0;
     errorMessage( "Could not find the end of a header; clearing the buffer\n" );
@@ -915,9 +917,9 @@ int8_t readHeaders( void ) {
 
     if ( *lineBuffer == 0 ) break;
 
-                  
+
     if ( strnicmp( lineBuffer, "Content-Length:", 15 ) == 0) {
-      // Skip past Content-Length: 
+      // Skip past Content-Length:
       s = lineBuffer + 15;
       ExpectedContentLength = atol(s);
       ExpectedContentLengthSent = true;
@@ -1233,7 +1235,7 @@ int readContent( void ) {
     // Fixme: This requires a few hundred bytes to do, which is obscene.
     // Replace with int 21,57 (Get/set file date and time using handle)
     // to reduce the bloat from the C runtime.
- 
+
     if ( IsTZSet == true ) {
       struct utimbuf tmp;
       tmp.actime = LastModifiedTime;
@@ -1244,7 +1246,7 @@ int readContent( void ) {
     }
 
   }
-    
+
 
   int rc = -1;
 
@@ -1254,10 +1256,43 @@ int readContent( void ) {
     } else {
       errorMessage( "Warning: expected %lu bytes, received %lu bytes\n", ExpectedContentLength, TotalBytesReceived );
     }
-  } 
- 
+  }
+
   verboseMessage( "Received %lu bytes\n", TotalBytesReceived );
 
+  if ( ShowRate && !QuietMode ) {
+
+    time_t transferEndTime = time( NULL );
+    uint32_t elapsedSeconds = (uint32_t)( transferEndTime - TransferStartTime );
+
+    if ( elapsedSeconds > 0 ) {
+
+      uint32_t bytesPerSec = TotalBytesReceived / elapsedSeconds;
+
+      uint32_t kibPerSec100 =
+        ( bytesPerSec * 100ul ) / 1024ul;
+
+      uint32_t kbitPerSec100 =
+        ( bytesPerSec * 800ul ) / 1000ul;
+
+      fprintf( stderr,
+              "Transfer rate: %lu bytes in %lu s, %lu.%02lu KiB/s, %lu.%02lu kbit/s\n",
+              TotalBytesReceived,
+              elapsedSeconds,
+              kibPerSec100 / 100ul,
+              kibPerSec100 % 100ul,
+              kbitPerSec100 / 100ul,
+              kbitPerSec100 % 100ul );
+
+    } else {
+
+      fprintf( stderr,
+              "Transfer rate: %lu bytes in less than 1 second\n",
+              TotalBytesReceived );
+
+    }
+
+  }
 
   return rc;
 }
@@ -1273,6 +1308,7 @@ char *HelpText = {
   "  -h                       Shows this help\n"
   "  -v                       Print verbose status messages\n"
   "  -quiet                   Quiet mode (does not apply to usage errors)\n"
+  "  -rate                    Print transfer rate when finished\n"
   "  -headers                 Fetch only the HTTP headers\n"
   "  -showheaders             Fetch content, but show headers too\n"
   "  -m                       Fetch content only if modified (use with -o option)\n"
@@ -1313,6 +1349,9 @@ static void parseArgs( int argc, char *argv[] ) {
     }
     else if ( stricmp( argv[i], "-v" ) == 0 ) {
       Verbose = true;
+    }
+    else if ( stricmp( argv[i], "-rate" ) == 0 ) {
+      ShowRate = true;
     }
     else if ( stricmp( argv[i], "-headers" ) == 0 ) {
       HeadersOnly = true;
@@ -1357,14 +1396,14 @@ static void parseArgs( int argc, char *argv[] ) {
     else {
       usageError( "Unknown option: %s\n", argv[i] );
     }
-   
+
 
   }
 
   if ( QuietMode && Verbose ) {
     usageError( "%s", "Do not specify both -quiet and -v\n" );
   }
-    
+
 
   if ( ModifiedSince && (*outputFilename == 0) ) {
     usageError( "%s", "Need to specify a filename with -o if using -m\n" );
@@ -1417,14 +1456,14 @@ static void parseArgs( int argc, char *argv[] ) {
 
         strncpy( Hostname, hostnameStart, pathStart - hostnameStart );
         Hostname[ HOSTNAME_LEN - 1 ] = 0;
-      
+
         strncpy( Path, pathStart, PATH_LEN );
         Path[ PATH_LEN - 1 ] = 0;
 
       }
 
     }
-    else { 
+    else {
 
       strncpy( Hostname, proxy, HOSTNAME_LEN );
       Hostname[ HOSTNAME_LEN - 1 ] = 0;
@@ -1433,7 +1472,7 @@ static void parseArgs( int argc, char *argv[] ) {
       Path[ PATH_LEN - 1 ] = 0;
 
     }
-    
+
 
     char *portStart = strchr( Hostname, ':' );
 
@@ -1546,6 +1585,8 @@ int main( int argc, char *argv[] ) {
   if ( resolve(Hostname, HostAddr) ) shutdown( 1 );
 
   if ( connectSocket( ) ) shutdown( 1 );
+
+  TransferStartTime = time( NULL );
 
   if ( sendHeaders( ) ) {
     errorMessage( "Error sending HTTP request\n" );
