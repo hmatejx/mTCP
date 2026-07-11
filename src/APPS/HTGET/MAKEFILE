@@ -34,7 +34,7 @@ compile_options = -0 $(memory_model) -DCFG_H="htget.cfg" -oh -ok -ot -s -oa -ei 
 compile_options += -i=$(tcp_h_dir) -i=$(common_h_dir)
 
 
-tcpobjs = packet.obj arp.obj eth.obj ip.obj tcp.obj tcpsockm.obj udp.obj utils.obj dns.obj timer.obj ipasm.obj trace.obj
+tcpobjs = packet.obj arp.obj eth.obj ip.obj tcp.obj tcpsockm.obj udp.obj utils.obj dns.obj timer.obj ipasm.obj trace.obj biostime.obj
 objs = htget.obj
 
 all : clean htget.exe

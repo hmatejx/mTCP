@@ -59,6 +59,7 @@
 #include "tcpsockm.h"
 #include "udp.h"
 #include "dns.h"
+#include "biostime.h"
 
 
 #define HOSTNAME_LEN        (80)
@@ -82,6 +83,7 @@ bool     HeadersOnly = false;
 bool     ShowHeaders = false;
 bool     ModifiedSince = false;
 bool     ShowRate = false;
+bool     ShowProgress = false;
 
 enum HttpVersion { HTTP_v09, HTTP_v10, HTTP_v11 };
 HttpVersion HttpVer = HTTP_v11;
@@ -137,8 +139,110 @@ char *dayname[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
 char *monthname[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
 
-// Rate measurement
+// Rate measurement and progress bar handling
+//
 time_t   TransferStartTime;
+
+#define PROGRESS_BAR_WIDTH 25
+
+uint32_t LastProgressSecond = 0xfffffffful;
+uint8_t  SpinnerIndex = 0;
+bool     ProgressWasShown = false;
+
+static uint32_t percentDone( uint32_t done, uint32_t total ) {
+
+  if ( total == 0 ) {
+    return 0;
+  }
+
+  // Avoid overflow for larger files.
+  if ( total < 1000000ul ) {
+    return ( done * 100ul ) / total;
+  }
+
+  return done / ( total / 100ul );
+}
+
+
+static void showProgress( uint32_t bytesReceived, bool force ) {
+
+  if ( !ShowProgress || QuietMode ) {
+    return;
+  }
+
+  uint32_t now = getRtcSecondsSinceMidnight( );
+
+  // Do not redraw more than once per second, unless forced.
+  if ( !force && ProgressWasShown && now == LastProgressSecond ) {
+    return;
+  }
+
+  LastProgressSecond = now;
+  ProgressWasShown = true;
+
+  uint32_t elapsedSeconds = rtcElapsedSeconds( TransferStartTime, now );
+
+  uint32_t bytesPerSec = 0;
+  if ( elapsedSeconds > 0 ) {
+    bytesPerSec = bytesReceived / elapsedSeconds;
+  }
+
+  uint32_t kibPerSec100 =
+    ( bytesPerSec * 100ul ) / 1024ul;
+
+  if ( ExpectedContentLengthSent && ExpectedContentLength > 0 ) {
+
+    uint32_t pct = percentDone( bytesReceived, ExpectedContentLength );
+    if ( pct > 100 ) pct = 100;
+
+    uint8_t filled =
+      (uint8_t)( ( pct * PROGRESS_BAR_WIDTH ) / 100ul );
+
+    char bar[ PROGRESS_BAR_WIDTH + 1 ];
+
+    for ( uint8_t i = 0; i < PROGRESS_BAR_WIDTH; i++ ) {
+      bar[i] = ( i < filled ) ? '#' : '-';
+    }
+    bar[ PROGRESS_BAR_WIDTH ] = 0;
+
+    fprintf( stderr,
+             "\r[%s] %3lu%% %lu/%lu bytes %lu.%02lu KiB/s   ",
+             bar,
+             pct,
+             bytesReceived,
+             ExpectedContentLength,
+             kibPerSec100 / 100ul,
+             kibPerSec100 % 100ul );
+
+  } else {
+
+    static char spinner[] = "|/-\\";
+
+    fprintf( stderr,
+             "\r%c %lu bytes received %lu.%02lu KiB/s   ",
+             spinner[ SpinnerIndex ],
+             bytesReceived,
+             kibPerSec100 / 100ul,
+             kibPerSec100 % 100ul );
+
+    SpinnerIndex++;
+    if ( SpinnerIndex >= 4 ) SpinnerIndex = 0;
+
+  }
+
+  fflush( stderr );
+}
+
+
+static void finishProgress( uint32_t bytesReceived ) {
+
+  if ( ShowProgress && !QuietMode ) {
+    showProgress( bytesReceived, true );
+    fprintf( stderr, "\n" );
+  }
+
+}
+
 
 // Return code table
 //
@@ -1074,6 +1178,12 @@ int readContent( void ) {
 
   uint32_t TotalBytesReceived = 0;  // Actually, just content bytes.
 
+  LastProgressSecond = 0xfffffffful;
+  SpinnerIndex = 0;
+  ProgressWasShown = false;
+
+  showProgress( TotalBytesReceived, true );
+
   StopCode stopCode = NotDone;
 
   while ( stopCode == NotDone ) {
@@ -1179,6 +1289,8 @@ int readContent( void ) {
       }
 
       TotalBytesReceived += bytesToWrite;
+      showProgress( TotalBytesReceived, false );
+
       nextChunkSize = nextChunkSize - bytesToWrite;
       inBufLen = inBufLen - bytesToWrite;
       inBufStartIndex += bytesToWrite;
@@ -1221,6 +1333,7 @@ int readContent( void ) {
 
   } // end big while
 
+  finishProgress( TotalBytesReceived );
 
   verboseMessage( "Receive content exit: %s\n", StopCodeStrings[stopCode] );
 
@@ -1262,8 +1375,8 @@ int readContent( void ) {
 
   if ( ShowRate && !QuietMode ) {
 
-    time_t transferEndTime = time( NULL );
-    uint32_t elapsedSeconds = (uint32_t)( transferEndTime - TransferStartTime );
+    uint32_t transferEndTime = getRtcSecondsSinceMidnight( );
+    uint32_t elapsedSeconds = rtcElapsedSeconds(TransferStartTime, transferEndTime);
 
     if ( elapsedSeconds > 0 ) {
 
@@ -1309,6 +1422,7 @@ char *HelpText = {
   "  -v                       Print verbose status messages\n"
   "  -quiet                   Quiet mode (does not apply to usage errors)\n"
   "  -rate                    Print transfer rate when finished\n"
+  "  -progress                Show download progress\n"
   "  -headers                 Fetch only the HTTP headers\n"
   "  -showheaders             Fetch content, but show headers too\n"
   "  -m                       Fetch content only if modified (use with -o option)\n"
@@ -1352,6 +1466,9 @@ static void parseArgs( int argc, char *argv[] ) {
     }
     else if ( stricmp( argv[i], "-rate" ) == 0 ) {
       ShowRate = true;
+    }
+    else if ( stricmp( argv[i], "-progress" ) == 0 ) {
+      ShowProgress = true;
     }
     else if ( stricmp( argv[i], "-headers" ) == 0 ) {
       HeadersOnly = true;
@@ -1586,12 +1703,13 @@ int main( int argc, char *argv[] ) {
 
   if ( connectSocket( ) ) shutdown( 1 );
 
-  TransferStartTime = time( NULL );
-
   if ( sendHeaders( ) ) {
     errorMessage( "Error sending HTTP request\n" );
     shutdown( 1 );
   }
+
+  // Best compromise to start the transfer rate clock ad the headers might already include some body bytes
+  TransferStartTime = getRtcSecondsSinceMidnight( );
 
   if ( readHeaders( ) ) {
     errorMessage( "Error reading HTTP headers\n" );
